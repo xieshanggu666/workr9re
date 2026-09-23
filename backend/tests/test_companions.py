@@ -21,12 +21,35 @@ def _find_shop_path(seed_start=0):
     raise AssertionError("no shop node")
 
 
+def _clear_current_battle(client, rid, view):
+    """合法打完当前战斗并领取战利品（路线经过战斗节点时用：不能靠旧漏洞跳过）。"""
+    while view["in_battle"]:
+        rec = service.load_run(rid)
+        rec["state"]["battle"]["entities"]["enemy"]["hp"] = 1
+        db.save_run(rid, rec["state"]["status"], rec["state"]["position"], rec["state"])
+        cur = client.get(f"/api/runs/{rid}/resume").json()
+        strike = next((h for h in cur["battle"]["hand"]
+                       if (h["id"] if isinstance(h, dict) else h) == "strike"), None)
+        if strike is not None:
+            uid = strike["uid"] if isinstance(strike, dict) else strike
+            step = client.post(f"/api/runs/{rid}/act", json={"action": "play", "card": uid})
+        else:
+            step = client.post(f"/api/runs/{rid}/act", json={"action": "end_turn"})
+        assert step.status_code == 200
+        view = step.json()["run"]
+    # 战利品留待离开节点时自动放弃：不领奖可保持初始金币/牌组规模，
+    # 与用例的“0 金币、7 张牌”前提一致（规则允许未领奖直接前往下一节点）。
+    return view
+
+
 def _walk(client, rid, nodes):
     view = None
     for node in nodes:
         view = client.post(
             f"/api/runs/{rid}/act", json={"action": "choose_node", "node": node}
         ).json()["run"]
+        # 路径上的战斗/奖励节点必须合法结清后才能继续推进（禁止战斗中换节点）
+        view = _clear_current_battle(client, rid, view)
     return view
 
 
@@ -194,11 +217,20 @@ def test_companion_carries_across_advance_and_replay_checkpoints(client):
 def test_legacy_state_without_companion_migrates_and_old_replay_is_legacy(client):
     seed, path = _find_shop_path(5000)
     rid = client.post("/api/runs", json={"seed": seed}).json()["run_id"]
-    _walk(client, rid, path[:1])  # 产生一个旧动作后模拟旧档缺字段
+    # 直接把位置移动到商店节点并构造商店库存（测试便捷路径：不产生任何
+    # choose_node/战斗日志，只留下 create 这一条旧版动作），再抹掉 companion
+    # 字段与伙伴货架，模拟 2.6.0 之前停在商店里的旧档
     rec = service.load_run(rid)
-    old_state = copy.deepcopy(rec["state"])
-    old_state.pop("companion", None)
-    db.save_run(rid, old_state["status"], old_state["position"], old_state)
+    from app import shop as shop_mod
+    shop_node = path[-1]
+    nd = rec["map"]["nodes"][shop_node]
+    stock_seed = (rec["state"]["seed"] * 10007 + nd["row"] * 131
+                  + ord(shop_node[0])) & 0xFFFFFFFF
+    shop = shop_mod.generate_stock(stock_seed, set(), set(), has_companion=False)
+    rec["state"]["position"] = shop_node
+    rec["state"]["shop"] = shop
+    rec["state"].pop("companion", None)
+    db.save_run(rid, rec["state"]["status"], rec["state"]["position"], rec["state"])
 
     resumed = client.get(f"/api/runs/{rid}/resume").json()
     assert resumed["companion"] is None

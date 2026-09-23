@@ -46,11 +46,34 @@ def _find_shop_path(seed_start=0):
     raise AssertionError("no shop node")
 
 
+def _clear_current_battle(client, rid, run):
+    """合法打完当前战斗并领取战利品（路线经过战斗节点时用：不能靠旧漏洞跳过）。"""
+    while run["in_battle"]:
+        rec = service.load_run(rid)
+        rec["state"]["battle"]["entities"]["enemy"]["hp"] = 1
+        db.save_run(rid, rec["state"]["status"], rec["state"]["position"], rec["state"])
+        view = client.get(f"/api/runs/{rid}/resume").json()
+        strike = next((h for h in view["battle"]["hand"]
+                       if (h["id"] if isinstance(h, dict) else h) == "strike"), None)
+        if strike is not None:
+            uid = strike["uid"] if isinstance(strike, dict) else strike
+            step = client.post(f"/api/runs/{rid}/act", json={"action": "play", "card": uid})
+        else:
+            step = client.post(f"/api/runs/{rid}/act", json={"action": "end_turn"})
+        assert step.status_code == 200
+        run = step.json()["run"]
+    # 战利品留待离开节点时自动放弃：不领奖可保持初始金币/牌组规模，
+    # 与用例的“0 金币、7 张牌”前提一致（规则允许未领奖直接前往下一节点）。
+    return run
+
+
 def _walk(client, rid, nodes):
     run = None
     for n in nodes:
         run = client.post(f"/api/runs/{rid}/act",
                           json={"action": "choose_node", "node": n}).json()["run"]
+        # 路径上的战斗/奖励节点必须合法结清后才能继续推进（禁止战斗中换节点）
+        run = _clear_current_battle(client, rid, run)
     return run
 
 
@@ -242,6 +265,13 @@ def test_commit_shop_tx_rolls_back_entire_run_on_failure():
     rid = service.create_run(seed=seed)["run_id"]
     for n in path:
         service.act(rid, {"action": "choose_node", "node": n})
+        # 路径上的战斗节点必须合法打完才能继续（禁止战斗中换节点）
+        state = service.load_run(rid)["state"]
+        while state["in_battle"]:
+            state["battle"]["entities"]["enemy"]["hp"] = 1
+            db.save_run(rid, state["status"], state["position"], state)
+            service.act(rid, {"action": "play", "card": state["battle"]["hand"][0]})
+            state = service.load_run(rid)["state"]
     rec = service.load_run(rid)
     rec["state"]["gold"] = 100
     db.save_run(rid, rec["state"]["status"], rec["state"]["position"], rec["state"])

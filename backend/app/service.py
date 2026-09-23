@@ -1120,8 +1120,14 @@ def _apply_action(run, a, action, map_data, grant_unlocks=False):
 
 
 def _choose_node(run, map_data, node, grant_unlocks=True):
+    # 战斗（含奇遇伏击战）只能通过打牌/结束回合等战斗行动走向胜负，未分胜负前
+    # 绝不允许换节点——否则当前遭遇会被直接丢弃（旧实现正是这个漏洞：战斗中
+    # 选择可达节点即可推进路线，首领战中更可借 BOSS 特例返回旧节点，用旧节点
+    # 的休整/商店/奇遇重置并跳过整个遭遇）。
+    if run.get("in_battle") or run.get("battle"):
+        raise InvalidAction("cannot choose a node while a battle is in progress")
     from_current = map_data["routes"].get(run["position"], [])
-    if run["position"] != mapgen.BOSS and node not in from_current:
+    if node not in from_current:
         raise InvalidAction(f"node {node} unreachable from {run['position']}")
     node_data = map_data["nodes"][node]
     run["position"] = node

@@ -56,11 +56,16 @@ export default function MapView({ view }) {
   return (
     <div className="map">
       <h3>选择路线（当前节点：{TYPE_LABEL[m.nodes[position]?.type] || position}）</h3>
+      {view.in_battle && (
+        <p className="maplocked">⚔️ 战斗进行中，击败敌人后才能继续推进路线</p>
+      )}
       <div className="mapgrid">
         {Object.keys(byRow).sort((a, b) => Number(a) - Number(b)).map((r) => (
           <div className="maprow" key={r}>
             {byRow[r].map(({ nid, node }) => {
-              const reachable = view.reachable.some((x) => x.id === nid)
+              // 战斗未分胜负前路线必须锁定：后端会拒绝战斗中换节点，前端也
+              // 直接禁用，避免误点跳过遭遇（含首领战中返回旧节点）。
+              const reachable = !view.in_battle && view.reachable.some((x) => x.id === nid)
               const isCur = nid === position
               return (
                 <button
