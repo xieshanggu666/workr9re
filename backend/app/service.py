@@ -1120,8 +1120,15 @@ def _apply_action(run, a, action, map_data, grant_unlocks=False):
 
 
 def _choose_node(run, map_data, node, grant_unlocks=True):
+    # 战斗未分胜负前不得推进路线：否则当前战斗（含首领战/伏击）会被直接
+    # 遗弃，battle_index 继续累加，等于跳过整场战斗。
+    if run.get("in_battle") and run.get("battle"):
+        raise InvalidAction("cannot move while battle is in progress")
     from_current = map_data["routes"].get(run["position"], [])
-    if run["position"] != mapgen.BOSS and node not in from_current:
+    # 地图是有向无环图，任何位置（含首领节点）都只能沿出边前进。此前首领
+    # 节点豁免了可达校验，导致首领战中可以退回任意旧节点并重进节点，重置
+    # 商店/锻造/奇遇乃至旧战斗（刷敌人、刷掉落、清空未结遭遇）。
+    if node not in from_current:
         raise InvalidAction(f"node {node} unreachable from {run['position']}")
     node_data = map_data["nodes"][node]
     run["position"] = node
@@ -2802,7 +2809,8 @@ def _public_view(run, map_data, run_id, include_unlocks=True, rev=None, expediti
     rev 非 None 时附带存档乐观版本号，客户端下次行动可作为 expected_rev 回传。
     expedition 非 None（远征章节 run）时附带远征摘要（章节进度/结算状态）。
     """
-    reachable = map_data["routes"].get(run["position"], [])
+    # 战斗进行中不开放任何路线：战斗未结束前不能推进（服务端 act 同样硬拦截）
+    reachable = [] if run["in_battle"] else map_data["routes"].get(run["position"], [])
     snap = None
     if run["in_battle"] and run["battle"]:
         def pub_ent(k):

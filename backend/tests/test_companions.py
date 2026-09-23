@@ -9,10 +9,12 @@ from app.engine import Battle
 from app.enemies import get_enemy
 
 
-def _find_shop_path(seed_start=0):
+def _find_shop_path(seed_start=0, first_non_battle=False):
     for seed in range(seed_start, seed_start + 3000):
         m = mapgen.generate_map(seed)
         for n0 in m["routes"][m["start"]]:
+            if first_non_battle and m["nodes"][n0]["type"] in (mapgen.ENCOUNTER, mapgen.ELITE):
+                continue
             if m["nodes"][n0]["type"] == mapgen.SHOP:
                 return seed, [n0]
             for n1 in m["routes"][n0]:
@@ -22,12 +24,9 @@ def _find_shop_path(seed_start=0):
 
 
 def _walk(client, rid, nodes):
-    view = None
-    for node in nodes:
-        view = client.post(
-            f"/api/runs/{rid}/act", json={"action": "choose_node", "node": node}
-        ).json()["run"]
-    return view
+    # 修复「战斗中也能选节点」后：路径上的中途战斗必须合法打完，不能再跳过
+    from conftest import walk_nodes
+    return walk_nodes(client, rid, nodes)
 
 
 def _set_gold(rid, gold):
@@ -192,7 +191,9 @@ def test_companion_carries_across_advance_and_replay_checkpoints(client):
 
 
 def test_legacy_state_without_companion_migrates_and_old_replay_is_legacy(client):
-    seed, path = _find_shop_path(5000)
+    # 首节点须为非战斗节点：本测试只录制一个 choose_node 动作就抹掉 companion
+    # 字段做旧档迁移（中途战斗会额外追加 play 动作，与本用例意图无关）
+    seed, path = _find_shop_path(5000, first_non_battle=True)
     rid = client.post("/api/runs", json={"seed": seed}).json()["run_id"]
     _walk(client, rid, path[:1])  # 产生一个旧动作后模拟旧档缺字段
     rec = service.load_run(rid)

@@ -47,11 +47,9 @@ def _find_shop_path(seed_start=0):
 
 
 def _walk(client, rid, nodes):
-    run = None
-    for n in nodes:
-        run = client.post(f"/api/runs/{rid}/act",
-                          json={"action": "choose_node", "node": n}).json()["run"]
-    return run
+    # 修复「战斗中也能选节点」后：路径上的中途战斗必须合法打完，不能再跳过
+    from conftest import walk_nodes
+    return walk_nodes(client, rid, nodes)
 
 
 def _set_gold(rid, gold):
@@ -240,8 +238,9 @@ def test_remove_rejects_unknown_uid_outside_shop_and_min_deck(client):
 def test_commit_shop_tx_rolls_back_entire_run_on_failure():
     seed, path = _find_shop_path(1300)
     rid = service.create_run(seed=seed)["run_id"]
-    for n in path:
-        service.act(rid, {"action": "choose_node", "node": n})
+    # 路径中途的战斗必须合法打完（不能再借旧 bug 跳过）
+    from conftest import walk_nodes_direct
+    walk_nodes_direct(rid, path)
     rec = service.load_run(rid)
     rec["state"]["gold"] = 100
     db.save_run(rid, rec["state"]["status"], rec["state"]["position"], rec["state"])
